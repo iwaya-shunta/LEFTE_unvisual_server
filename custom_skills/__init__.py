@@ -7,11 +7,27 @@ from custom_skills.calendar_skill import (
     delete_calendar_event,
     update_calendar_event,
 )
+from custom_skills.gmail_skill import (
+    list_unread_emails,
+    read_email_content,
+    send_email,
+)
+from custom_skills.web_search_skill import (
+    search_web,
+    fetch_web_page,
+)
 
-# Gemini に渡す全ツールのリスト
 ALL_SKILLS = [
+    # カレンダー
     list_calendar_events,
     add_calendar_event,
     delete_calendar_event,
     update_calendar_event,
+    # Gmail
+    list_unread_emails,
+    read_email_content,
+    send_email,
+    # Web検索・ブラウジング
+    search_web,
+    fetch_web_page,
 ]
