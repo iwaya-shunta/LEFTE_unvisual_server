@@ -1,4 +1,5 @@
 import os
+import re
 from typing import List, Optional
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form
@@ -13,7 +14,7 @@ import uvicorn
 import mimetypes
 
 from custom_skills import ALL_SKILLS
-from database import init_db, save_message, get_recent_messages, get_history_by_days
+from database import get_today_messages, init_db, save_message, get_recent_messages, get_history_by_days
 
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -100,29 +101,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-def get_system_instruction() -> str:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    personality_path = os.path.join(base_dir, "personality.txt")
-    personality = ""
-    if os.path.exists(personality_path):
-        with open(personality_path, "r", encoding="utf-8") as f:
-            personality = f.read()
-    else:
-        personality = "あなたは助手の L.E.F.T.E. です。"
-
-    tempo_rules = """
-【発話ガイドライン】
-あなたは人間味のある対話を行うため、以下のタグを文章の中に挿入して、自分の話速を自由にコントロールしてください。
-- [slow] : 感情を込める言葉、強調したい重要事項、考え込むような場面。
-- [fast] : 勢いのある相槌、さらっと流す補足説明、興奮している時。
-- [normal]: 丁寧な説明や、通常の会話。
-
-例：「[slow]駿太、[normal]今日もお疲れ様！[fast]ランニングの記録をまとめておいたよ！」
-
-会話の中に、ボクっ娘らしい可愛くてユーモアのある顔文字や絵文字を積極的に混ぜてね！例：(๑•̀ㅂ•́)و✧、✨、( ´艸｀)、🚀
-"""
-    return f"{personality}\n{tempo_rules}"
-
 
 def build_gemini_history(days: int = 5):
     """過去5日分のDB履歴を取得し、Geminiの交互ルールに沿ったContentsリストを作成する"""
@@ -185,9 +163,9 @@ def health_check():
 
 
 @app.get("/history")
-def get_chat_history(limit: int = 50):
-    """PC版・Flutter版両対応の履歴返却"""
-    return get_recent_messages(limit=limit)
+def get_chat_history():
+    """朝4時起算の当日分メッセージ履歴を返却"""
+    return get_today_messages()
 
 
 @app.get("/logs")
@@ -198,39 +176,52 @@ def view_logs(limit: int = 20):
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(
     message: str = Form(...),
-    files: Optional[List[UploadFile]] = File(None),
+    files: Optional[UploadFile] = File(None),
+    latitude: Optional[float] = Form(None),   # フォームで送られても受け取れるように
+    longitude: Optional[float] = Form(None)
 ):
-    print(f"[受信]: {message} (添付ファイル数: {len(files) if files else 0})")
+    lat = latitude
+    lon = longitude
+
+    # メッセージ本文に [Location: 34.37289,132.40671] がある場合の抽出
+    if lat is None or lon is None:
+        loc_match = re.search(r'\[Location:\s*([-\d.]+),\s*([-\d.]+)\]', message)
+        if loc_match:
+            lat = float(loc_match.group(1))
+            lon = float(loc_match.group(2))
+            # 本文からタグを除去
+            message = re.sub(r'\[Location:\s*([-\d.]+),\s*([-\d.]+)\]', '', message).strip()
+
+    print(f"[受信]: {message} (添付ファイル: {'あり' if files else 'なし'})")
 
     img_tags = []
     saved_file_infos = []
     primary_image_url = None
 
+    # 単一ファイル（UploadFile）の処理
     if files:
+        file_bytes = await files.read()
+        mime_type = files.content_type
+
+        if not mime_type or mime_type == "application/octet-stream":
+            mime_type, _ = mimetypes.guess_type(files.filename or "")
+            if not mime_type:
+                mime_type = "image/jpeg"
+
         now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        for idx, file in enumerate(files):
-            file_bytes = await file.read()
-            mime_type = file.content_type
+        safe_filename = f"{now_str}_{files.filename}"
+        save_path = UPLOAD_DIR / safe_filename
+        with open(save_path, "wb") as f:
+            f.write(file_bytes)
 
-            if not mime_type or mime_type == "application/octet-stream":
-                mime_type, _ = mimetypes.guess_type(file.filename or "")
-                if not mime_type:
-                    mime_type = "image/jpeg"
+        rel_url = f"/uploads/{safe_filename}"
+        if mime_type.startswith("image/"):
+            img_tags.append(f"[img: {rel_url}]")
+            primary_image_url = rel_url
+        else:
+            img_tags.append(f"[file: {files.filename}]")
 
-            safe_filename = f"{now_str}_{idx}_{file.filename}"
-            save_path = UPLOAD_DIR / safe_filename
-            with open(save_path, "wb") as f:
-                f.write(file_bytes)
-
-            rel_url = f"/uploads/{safe_filename}"
-            if mime_type.startswith("image/"):
-                img_tags.append(f"[img: {rel_url}]")
-                if primary_image_url is None:
-                    primary_image_url = rel_url
-            else:
-                img_tags.append(f"[file: {file.filename}]")
-
-            saved_file_infos.append((file_bytes, mime_type, file.filename))
+        saved_file_infos.append((file_bytes, mime_type, files.filename))
 
     # ユーザー発言のDB保存
     db_content = message
@@ -239,13 +230,13 @@ async def chat_endpoint(
             f"{message}\n" + "\n".join(img_tags) if message else "\n".join(img_tags)
         )
 
-    # ユーザー発言をDB保存した直後に追加
     save_message(
         role="user",
         content=db_content.strip(),
         image_url=primary_image_url,
     )
-    # 🚀 WebSocketで全クライアント（スマホ・PC両方）に即時配信
+
+    # 🚀 WebSocketで全クライアントに即時配信
     await manager.broadcast({
         "type": "new_message",
         "role": "user",
@@ -257,7 +248,16 @@ async def chat_endpoint(
     # Gemini 推論
     try:
         current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        prompt_with_time = f"【現在時刻: {current_time_str}】\n{message}"
+
+        # ★ 位置情報コンテキストの構築
+        location_context = ""
+        if lat is not None and lon is not None:
+            location_context = (
+                f"\n【ユーザーの現在地】緯度: {lat}, 経度: {lon}\n"
+                "※周辺情報、店舗、地名、ルート等について尋ねられた場合は、登録されている地図検索ツール（search_nearby_places 等）を使用して場所を特定・回答してください。"
+            )
+
+        prompt_with_context = f"【現在時刻: {current_time_str}】{location_context}\n{message}"
 
         contents = []
         for file_bytes, mime_type, _ in saved_file_infos:
@@ -267,16 +267,46 @@ async def chat_endpoint(
                     mime_type=mime_type,
                 )
             )
-        contents.append(prompt_with_time)
+        contents.append(prompt_with_context)
 
         # 🚀 5日分の記憶を持ったセッションで推論
         session = get_chat_session()
         ai_res = session.send_message(contents)
-        bot_reply = (
-            ai_res.text.strip()
-            if ai_res.text
-            else "ごめん、うまく聞き取れなかったよ。"
-        )
+
+        # ツールマップの作成（登録スキルを名前から引けるようにする）
+        skill_map = {func.__name__: func for func in ALL_SKILLS}
+
+        # ツール呼び出し（Function Calling）が要求されている間、ループして実行・返答
+        while ai_res.function_calls:
+            for call in ai_res.function_calls:
+                func_name = call.name
+                func_args = call.args or {}
+                print(f"[TOOL 実行要求]: {func_name}({func_args})")
+
+                target_func = skill_map.get(func_name)
+                if target_func:
+                    try:
+                        tool_result = target_func(**func_args)
+                    except Exception as err:
+                        tool_result = f"ツール実行時エラー: {err}"
+                else:
+                    tool_result = f"未定義のツールです: {func_name}"
+
+                print(f"[TOOL 実行結果]: {tool_result}")
+
+                # 実行結果をGeminiセッションに返信して次の思考・発話を行わせる
+                ai_res = session.send_message(
+                    types.Part.from_function_response(
+                        name=func_name,
+                        response={"result": str(tool_result)}
+                    )
+                )
+
+        raw_reply = ai_res.text.strip() if ai_res.text else "ごめん、うまく聞き取れなかったよ。"
+        # 万が一 [tool_code ...] が残っていた場合のお掃除
+        bot_reply = re.sub(r'\[tool_code[\s\S]*?\]', '', raw_reply).strip()
+        if not bot_reply:
+            bot_reply = raw_reply
 
     except Exception as e:
         print(f"[Gemini API エラー]: {e}")
@@ -284,6 +314,7 @@ async def chat_endpoint(
 
     # AI応答のDB保存
     save_message(role="assistant", content=bot_reply)
+
     # 🚀 WebSocketでAIの返答も即時配信
     await manager.broadcast({
         "type": "new_message",

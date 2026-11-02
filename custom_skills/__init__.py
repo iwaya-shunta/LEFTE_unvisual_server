@@ -1,33 +1,40 @@
-"""
-Gemini に渡すカスタムスキル（Tool Calling用関数群）の集約モジュール
-"""
-from custom_skills.calendar_skill import (
+from .google_maps_skill import reverse_geocode_skill, search_nearby_places
+from .calendar_skill import (
     list_calendar_events,
     add_calendar_event,
     delete_calendar_event,
-    update_calendar_event,
+    update_calendar_event
 )
-from custom_skills.gmail_skill import (
+from .gmail_skill import (
     list_unread_emails,
     read_email_content,
-    send_email,
+    send_email
 )
-from custom_skills.web_search_skill import (
+from .web_search_skill import (
     search_web,
-    fetch_web_page,
+    fetch_web_page
+)
+from .memo_skill import (
+    save_memo,
+    list_memos,
+    delete_memo,
+    clear_memos
 )
 
 ALL_SKILLS = [
-    # カレンダー
+    reverse_geocode_skill,
+    search_nearby_places,
     list_calendar_events,
     add_calendar_event,
     delete_calendar_event,
     update_calendar_event,
-    # Gmail
     list_unread_emails,
     read_email_content,
     send_email,
-    # Web検索・ブラウジング
     search_web,
     fetch_web_page,
+    save_memo,
+    list_memos,
+    delete_memo,
+    clear_memos,
 ]

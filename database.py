@@ -74,3 +74,39 @@ def get_history_by_days(days: int = 5):
         """, (since_date,))
         rows = cursor.fetchall()
         return [(r["timestamp"], r["role"], r["content"], r["image_url"]) for r in rows]
+
+def get_today_messages():
+    """
+    朝4時を1日の境目として、画面表示用の当日メッセージ履歴を取得する
+    （現在が午前4時前なら前日4:00以降、午前4時以降なら当日4:00以降）
+    """
+    now = datetime.now()
+    if now.hour < 4:
+        # 深夜0:00〜3:59までは「前日の朝4:00」を起点とする
+        start_date = (now - timedelta(days=1)).date()
+    else:
+        # 朝4:00以降は「今日の朝4:00」を起点とする
+        start_date = now.date()
+
+    cutoff_time = datetime.combine(start_date, datetime.min.time()).replace(hour=4).strftime("%Y-%m-%d %H:%M:%S")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, role, content, timestamp, image_url
+            FROM messages
+            WHERE timestamp >= ?
+            ORDER BY id ASC
+        """, (cutoff_time,))
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "role": r["role"],
+                "content": r["content"],
+                "timestamp": r["timestamp"],
+                "image_url": r["image_url"],
+            }
+            for r in rows
+        ]
